@@ -33,16 +33,6 @@ namespace {
 
 static const char* const kLocalService = "localservice";
 
-xla::util::ExceptionCleanup LockXrtDevice(const std::string& device) {
-  auto locker = XrtDeviceLockerArena::Get()->GetLocker(device);
-  locker->Lock();
-  return xla::util::ExceptionCleanup(
-      [locker =
-           std::move(locker)](xla::util::ExceptionCleanup::StatusType status) {
-        locker->Unlock(std::move(status));
-      });
-}
-
 // A simple Tensorflow Allocator which caches Tensor allocations in order to
 // avoid paying the kernel's clear_page_c() price.
 class TensorAllocator : public tensorflow::Allocator {
@@ -305,6 +295,35 @@ ComputationClient::DataPtr XrtComputationClient::CreateDataPlaceholder(
   return std::make_shared<XrtData>(std::move(device), std::move(shape));
 }
 
+std::vector<xla::ComputationClient::DataPtr>
+XrtComputationClient::CreateAsyncDatas(absl::Span<const TensorSource> tensors) {
+  std::vector<xla::ComputationClient::DataPtr> results(tensors.size());
+  for (size_t i = 0; i < tensors.size(); ++i) {
+    // Create a XrtHandle with dummy handle, releasr needs to take the
+    // real handle upon destructon.
+    XrtHandlePtr handle_ptr = std::make_shared<XrtHandle>(
+        DataHandleLocker::dummy_handle,
+        [this, device = tensors[i].device](int64_t handle) {
+          this->ReleaseXrtData(device, handle);
+        },
+        /*async=*/true);
+    results[i] = std::make_shared<XrtData>(this, tensors[i].device,
+                                           tensors[i].shape, handle_ptr);
+  }
+  return results;
+}
+
+std::vector<xla::util::ExceptionCleanup> XrtComputationClient::LockAsyncDatas(
+    absl::Span<const xla::ComputationClient::DataPtr> datas) {
+  std::vector<xla::util::ExceptionCleanup> unlcoker;
+  unlcoker.reserve(datas.size());
+  for (int i = 0; i < datas.size(); i++) {
+    unlcoker.emplace_back(
+        dynamic_cast<XrtData&>(*datas[i]).handle_ptr->LockHandle());
+  }
+  return unlcoker;
+}
+
 std::vector<size_t> XrtComputationClient::PartitionTransferToServer(
     absl::Span<const TensorSource> tensors) {
   int64_t max_partition_size = GetMaxTensorsPartitionSize();
@@ -329,11 +348,24 @@ std::vector<size_t> XrtComputationClient::PartitionTransferToServer(
 
 std::vector<ComputationClient::DataPtr> XrtComputationClient::TransferToServer(
     absl::Span<const TensorSource> tensors) {
+  return TransferToServerHelper(tensors, {});
+}
+
+void XrtComputationClient::TransferToServer(
+    absl::Span<const TensorSource> tensors, absl::Span<const DataPtr> datas) {
+  XLA_CHECK_EQ(tensors.size(), datas.size());
+  TransferToServerHelper(tensors, datas);
+  return;
+}
+
+std::vector<ComputationClient::DataPtr>
+XrtComputationClient::TransferToServerHelper(
+    absl::Span<const TensorSource> tensors, absl::Span<const DataPtr> datas) {
   auto partitions = PartitionTransferToServer(tensors);
   if (partitions.size() == 1) {
     // Fast path in case of single partition. Avoid creating threads and
     // waiting, since this is the common case.
-    return TransferToServerInternal(tensors);
+    return TransferToServerInternal(tensors, datas);
   }
   XLA_COUNTER("XrtPartitionedTransferToServer", 1);
 
@@ -345,8 +377,16 @@ std::vector<ComputationClient::DataPtr> XrtComputationClient::TransferToServer(
       size_t length = (i + 1 < partitions.size())
                           ? partitions[i + 1] - base_index
                           : tensors.size() - base_index;
-      auto partitions_results =
-          TransferToServerInternal(tensors.subspan(base_index, length));
+      std::vector<ComputationClient::DataPtr> partitions_results;
+      // Only pass datas if it is not empty.
+      if (datas.size()) {
+        partitions_results =
+            TransferToServerInternal(tensors.subspan(base_index, length),
+                                     datas.subspan(base_index, length));
+      } else {
+        partitions_results =
+            TransferToServerInternal(tensors.subspan(base_index, length), {});
+      }
       for (size_t r = 0; r < length; ++r) {
         results[base_index + r] = std::move(partitions_results[r]);
       }
@@ -360,33 +400,18 @@ std::vector<ComputationClient::DataPtr> XrtComputationClient::TransferToServer(
 
 std::vector<ComputationClient::DataPtr>
 XrtComputationClient::TransferToServerInternal(
-    absl::Span<const TensorSource> tensors) {
+    absl::Span<const TensorSource> tensors, absl::Span<const DataPtr> datas) {
   metrics::TimedSection timed(TransferToServerMetric());
   tensorflow::profiler::TraceMe activity(
       "TransferToServerInternal", tensorflow::profiler::TraceMeLevel::kInfo);
 
-  static bool transfer_async =
-      xla::sys_util::GetEnvBool("XLA_TRANSFER_ASYNC", false);
+  // If datas are passed in, don't create new datas but modify the passed in datas.
+  bool create_new_data = (datas.size() == 0);
   std::mutex lock;
   XrtSessionCache::SessionMap session_map;
   int64_t total_size = 0;
   auto mwait = std::make_shared<util::MultiWait>(tensors.size());
   std::map<XrtSession*, SessionWork> session_work_map;
-  std::map<XrtSession*, std::string> session_device_map;
-  std::map<std::string, std::shared_ptr<xla::util::ExceptionCleanup>>
-      device_unlocker_map;
-
-  if (transfer_async) {
-    // acquire allocation lock for all devices we want to allocate on
-    xla::util::Unique<std::string> unique_devices;
-    for (size_t i = 0; i < tensors.size(); ++i) {
-      unique_devices.set(TorchDeviceToXrtDevice(tensors[i].device));
-    }
-    // now assume that there is one device per call
-    device_unlocker_map[*unique_devices] =
-        std::make_shared<xla::util::ExceptionCleanup>(
-            LockXrtDevice(*unique_devices));
-  }
 
   {
     tensorflow::profiler::TraceMe activity(
@@ -409,7 +434,6 @@ XrtComputationClient::TransferToServerInternal(
           std::lock_guard<std::mutex> slock(lock);
           XrtSession* session = GetSessionForXrtDevice(
               alloc_session_cache_.get(), xrt_device, &session_map);
-          session_device_map[session] = xrt_device;
           SessionWork* session_work = &session_work_map[session];
           tensorflow::Scope device_scope =
               session->root()->WithDevice(xrt_device);
@@ -430,7 +454,10 @@ XrtComputationClient::TransferToServerInternal(
   OutboundDataMetric()->AddSample(total_size);
 
   mwait->Reset(session_work_map.size());
-  std::vector<DataPtr> results(tensors.size());
+  std::vector<DataPtr> results;
+  if (create_new_data) {
+    results.resize(tensors.size());
+  }
   {
     tensorflow::profiler::TraceMe activity(
         [&] {
@@ -444,85 +471,29 @@ XrtComputationClient::TransferToServerInternal(
       XrtSession* session = session_session_work.first;
       SessionWork* session_work = &session_session_work.second;
 
-      if (!transfer_async) {
-        auto runner = [&, session, session_work]() {
-          std::vector<tensorflow::Tensor> outputs;
-          XLA_CHECK_OK(session->session()->Run(session_work->feed_inputs,
-                                               session_work->outputs_handles,
-                                               &outputs));
-          XLA_CHECK_EQ(outputs.size(), session_work->outputs_handles.size());
+      auto runner = [&, session, session_work]() {
+        std::vector<tensorflow::Tensor> outputs;
+        XLA_CHECK_OK(session->session()->Run(session_work->feed_inputs,
+                                             session_work->outputs_handles,
+                                             &outputs));
+        XLA_CHECK_EQ(outputs.size(), session_work->outputs_handles.size());
 
-          for (size_t i = 0; i < outputs.size(); ++i) {
-            size_t li = session_work->index_mapping[i];
+        for (size_t i = 0; i < outputs.size(); ++i) {
+          size_t li = session_work->index_mapping[i];
+          if (create_new_data) {
             results[li] = std::make_shared<XrtData>(
                 this, tensors[li].device, tensors[li].shape,
                 outputs[i].scalar<int64_t>()());
+          } else {
+            dynamic_cast<XrtData&>(*datas[li])
+                .handle_ptr->update_handle(outputs[i].scalar<int64_t>()());
           }
-          CreateDataHandlesCounter()->AddValue(outputs.size());
-        };
-        env::ScheduleIoClosure(
-            util::MultiWait::Completer(mwait, std::move(runner)));
-        mwait->Wait();
-      } else {
-        std::shared_ptr<AsyncHandle> async = std::make_shared<AsyncHandle>();
-        async->session = session;
-        // session_work points to a local object, we need to move the local
-        // object to the async object to prevent it from going out of scope.
-        async->session_work = std::move(*session_work);
-        async->xrt_device = session_device_map[session];
-        async->unlocker = device_unlocker_map[async->xrt_device];
-        async->unlockers.reserve(async->session_work.outputs_handles.size());
-        async->handles.reserve(async->session_work.outputs_handles.size());
-        for (size_t i = 0; i < async->session_work.outputs_handles.size();
-             ++i) {
-          size_t li = async->session_work.index_mapping[i];
-          // Create a XrtHandle with dummy handle, releasr needs to take the
-          // real handle upon destructon.
-          XrtHandlePtr handle_ptr = std::make_shared<XrtHandle>(
-              DataHandleLocker::dummy_handle,
-              [this, device = tensors[li].device](int64_t handle) {
-                this->ReleaseXrtData(device, handle);
-              },
-              /*async=*/true);
-          async->handles.emplace_back(handle_ptr);
-          async->unlockers.emplace_back(handle_ptr->LockHandle());
-          results[li] = std::make_shared<XrtData>(
-              this, tensors[li].device, tensors[li].shape, handle_ptr);
         }
-        CreateDataHandlesCounter()->AddValue(
-            async->session_work.outputs_handles.size());
-        auto runner = [async]() {
-          try {
-            std::vector<tensorflow::Tensor> outputs;
-            XLA_CHECK_OK(async->session->session()->Run(
-                async->session_work.feed_inputs,
-                async->session_work.outputs_handles, &outputs));
-            XLA_CHECK_EQ(outputs.size(),
-                         async->session_work.outputs_handles.size());
-            for (size_t i = 0; i < outputs.size(); ++i) {
-              async->handles[i]->update_handle(outputs[i].scalar<int64_t>()());
-            }
-          } catch (...) {
-            // There are two paths of discovery of an exception happening on an
-            // asynchronous task. One happens if the creator of the asynchronous
-            // task explicitly waits for completion, in which case the exception
-            // will be thrown from the Wait() API. Re-throwing the exception
-            // below makes sure this will be captured by the completer function
-            // created below, and surfaced by the Wait() API. But we also need
-            // to surface the exception even in case the caller does not wait,
-            // and that is accomplished by setting the unlockers status. In that
-            // case the exception will be surfaced when the user tries to
-            // acquire the device locks the next time.
-            std::exception_ptr exptr = std::current_exception();
-            for (auto& unlocker : async->unlockers) {
-              unlocker.SetStatus(exptr);
-            }
-            throw;
-          }
-        };
-        env::ScheduleIoClosure(
-            util::MultiWait::Completer(mwait, std::move(runner)));
-      }
+        CreateDataHandlesCounter()->AddValue(outputs.size());
+      };
+      env::ScheduleIoClosure(
+          util::MultiWait::Completer(mwait, std::move(runner)));
+      mwait->Wait();
     }
   }
   return results;

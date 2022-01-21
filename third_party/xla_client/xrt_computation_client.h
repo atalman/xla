@@ -73,16 +73,8 @@ class XrtLocker {
 };
 
 class DataHandleLocker : public XrtLocker {
- protected:
-  static metrics::Metric* DataHandleBarrierMetric() {
-    static metrics::Metric* metric =
-        new metrics::Metric("DataHandleBarrierTime", metrics::MetricFnTime);
-    return metric;
-  };
-
  public:
   static const int64_t dummy_handle = -151235;
-  // TODO: make barrier incremented metric
 };
 
 class XrtDeviceLocker : public XrtLocker {
@@ -144,12 +136,13 @@ class XrtComputationClient : public ComputationClient {
       // Handle might only contain dummy value, need to wait for the
       // true handle assigniment.
       if (locker) {
+        XLA_TIMED("HandleBarrierWait");
         locker->Barrier();
       }
       releaser(handle_);
     }
 
-    // Lock the current XrtHandle and prevent other caller from accessign the
+    // Lock the current XrtHandle and prevent other caller from accessing the
     // handle_ value. This function will return an ExceptionCleanup object which
     // will rethrow the exception if there is one and unlock the XrtHandle upon
     // destruction.
@@ -173,6 +166,7 @@ class XrtComputationClient : public ComputationClient {
       // Handle might only contain dummy value, need to wait for the
       // true handle assigniment
       if (locker) {
+        XLA_TIMED("HandleBarrierWait");
         locker->Barrier();
       }
       return handle_;
@@ -282,8 +276,17 @@ class XrtComputationClient : public ComputationClient {
 
   DataPtr CreateDataPlaceholder(std::string device, Shape shape) override;
 
+  std::vector<DataPtr> CreateAsyncDatas(
+      absl::Span<const TensorSource> tensors) override;
+
+  std::vector<xla::util::ExceptionCleanup> LockAsyncDatas(
+      absl::Span<const DataPtr> datas) override;
+
   std::vector<DataPtr> TransferToServer(
       absl::Span<const TensorSource> tensors) override;
+
+  void TransferToServer(absl::Span<const TensorSource> tensors,
+                        absl::Span<const DataPtr> datas) override;
 
   std::vector<Literal> TransferFromServer(
       absl::Span<const DataPtr> handles) override;
@@ -431,8 +434,11 @@ class XrtComputationClient : public ComputationClient {
       absl::Span<const std::string> devices,
       const tensorflow::ClientSession::FeedType& feed_inputs);
 
+  std::vector<DataPtr> TransferToServerHelper(
+      absl::Span<const TensorSource> tensors, absl::Span<const DataPtr> datas);
+
   std::vector<DataPtr> TransferToServerInternal(
-      absl::Span<const TensorSource> tensors);
+      absl::Span<const TensorSource> tensors, absl::Span<const DataPtr> datas);
 
   // Retrieves the worker,worker_host pair for a given PyTorch device (ie,
   // TPU:0).
