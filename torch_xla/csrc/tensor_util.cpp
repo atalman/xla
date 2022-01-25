@@ -23,6 +23,7 @@
 #include "torch/csrc/lazy/core/hash.h"
 #include "torch_xla/csrc/helpers.h"
 #include "torch_xla/csrc/layout_manager.h"
+#include "torch_xla/csrc/torch_util.h"
 
 namespace torch_xla {
 namespace {
@@ -734,9 +735,10 @@ xla::ComputationClient::DataPtr TensorToXlaData(const at::Tensor& tensor,
                                                 const Device& device) {
   bool transfer_async = TransferAsync();
   std::shared_ptr<DataAsync> async = std::make_shared<DataAsync>();
-  // TODO: only move tensor if transfer async
+  // Tensor is a reference and can be inplace updated between this function
+  // returned and populate_fn being called. Need to make a deep copy.
   auto populate_fn =
-      [tensor = std::move(tensor), device](
+      [tensor = CopyTensor(tensor), device](
           const xla::ComputationClient::TensorSource& source_tensor,
           void* dest_buffer, size_t dest_buffer_size) {
         PopulateTensorBuffer(tensor, source_tensor.shape, dest_buffer,
@@ -904,10 +906,10 @@ std::vector<xla::ComputationClient::DataPtr> CreateTensorsData(
     Device device(devices[i]);
     xla::Shape shape = CreateComputationShapeFromTensor(tensors[i], &device);
     auto populate_fn =
-        [tensors = std::move(tensors), i, device](
+        [tensor = CopyTensor(tensors[i]), device](
             const xla::ComputationClient::TensorSource& source_tensor,
             void* dest_buffer, size_t dest_buffer_size) {
-          PopulateTensorBuffer(tensors[i], source_tensor.shape, dest_buffer,
+          PopulateTensorBuffer(tensor, source_tensor.shape, dest_buffer,
                                dest_buffer_size, device);
         };
     async->source_tensors.emplace_back(std::move(shape), devices[i],
