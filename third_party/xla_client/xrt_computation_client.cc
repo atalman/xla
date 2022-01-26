@@ -405,14 +405,14 @@ XrtComputationClient::TransferToServerInternal(
   tensorflow::profiler::TraceMe activity(
       "TransferToServerInternal", tensorflow::profiler::TraceMeLevel::kInfo);
 
-  // If datas are passed in, don't create new datas but modify the passed in datas.
+  // If datas are passed in, don't create new datas but modify the passed in
+  // datas.
   bool create_new_data = (datas.size() == 0);
   std::mutex lock;
   XrtSessionCache::SessionMap session_map;
   int64_t total_size = 0;
   auto mwait = std::make_shared<util::MultiWait>(tensors.size());
   std::map<XrtSession*, SessionWork> session_work_map;
-
   {
     tensorflow::profiler::TraceMe activity(
         "TransferToServerTransform", tensorflow::profiler::TraceMeLevel::kInfo);
@@ -470,7 +470,6 @@ XrtComputationClient::TransferToServerInternal(
     for (auto& session_session_work : session_work_map) {
       XrtSession* session = session_session_work.first;
       SessionWork* session_work = &session_session_work.second;
-
       auto runner = [&, session, session_work]() {
         std::vector<tensorflow::Tensor> outputs;
         XLA_CHECK_OK(session->session()->Run(session_work->feed_inputs,
@@ -493,8 +492,8 @@ XrtComputationClient::TransferToServerInternal(
       };
       env::ScheduleIoClosure(
           util::MultiWait::Completer(mwait, std::move(runner)));
-      mwait->Wait();
     }
+    mwait->Wait();
   }
   return results;
 }

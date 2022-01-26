@@ -77,43 +77,6 @@ class DataHandleLocker : public XrtLocker {
   static const int64_t dummy_handle = -151235;
 };
 
-class XrtDeviceLocker : public XrtLocker {
- protected:
-  static metrics::Metric* DeviceBarrierMetric() {
-    static metrics::Metric* metric = new metrics::Metric(
-        "XrtDeviceHandleBarrierTime", metrics::MetricFnTime);
-    return metric;
-  };
-
- public:
-  explicit XrtDeviceLocker(std::string device) : device_(std::move(device)) {}
-
- private:
-  std::string device_;
-};
-
-class XrtDeviceLockerArena {
- public:
-  static XrtDeviceLockerArena* Get() {
-    static XrtDeviceLockerArena* arena = new XrtDeviceLockerArena();
-    return arena;
-  }
-
-  std::shared_ptr<XrtDeviceLocker> GetLocker(const std::string& device) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = lockers_.find(device);
-    if (it == lockers_.end()) {
-      it = lockers_.emplace(device, std::make_shared<XrtDeviceLocker>(device))
-               .first;
-    }
-    return it->second;
-  }
-
- private:
-  std::mutex mutex_;
-  std::map<std::string, std::shared_ptr<XrtDeviceLocker>> lockers_;
-};
-
 class XrtComputationClient : public ComputationClient {
   struct DeviceHandle {
     std::string device;
@@ -184,7 +147,6 @@ class XrtComputationClient : public ComputationClient {
   struct XrtData : public Data {
     XrtData(std::string device, Shape device_shape)
         : Data(std::move(device), std::move(device_shape)) {}
-
     XrtData(XrtComputationClient* self, std::string device, Shape device_shape,
             int64_t handle)
         : Data(std::move(device), std::move(device_shape)),
@@ -380,15 +342,6 @@ class XrtComputationClient : public ComputationClient {
     std::vector<tensorflow::Output> outputs_handles;
     std::vector<tensorflow::Operation> operations;
     std::vector<size_t> index_mapping;
-  };
-
-  struct AsyncHandle {
-    XrtSession* session;
-    SessionWork session_work;
-    std::string xrt_device;
-    std::shared_ptr<xla::util::ExceptionCleanup> unlocker;
-    std::vector<xla::util::ExceptionCleanup> unlockers;
-    std::vector<XrtHandlePtr> handles;
   };
 
   XrtSession* GetSessionForTarget(XrtSessionCache* cache,
