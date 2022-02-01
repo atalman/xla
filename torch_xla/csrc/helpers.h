@@ -16,6 +16,7 @@
 #include "tensorflow/compiler/xla/xla_client/debug_macros.h"
 #include "tensorflow/compiler/xla/xla_client/util.h"
 #include "tensorflow/core/lib/bfloat16/bfloat16.h"
+#include "torch/csrc/lazy/core/util.h"
 
 namespace torch_xla {
 
@@ -117,11 +118,11 @@ class XlaHelpers {
   static xla::PrimitiveType TypeOfXlaOp(xla::XlaOp op);
 
   static std::vector<xla::int64_t> GetAllDimensions(size_t rank) {
-    return xla::util::Iota<xla::int64_t>(rank);
+    return torch::lazy::Iota<xla::int64_t>(rank);
   }
 
   static std::vector<xla::int64_t> GetAllDimensions(const xla::Shape& shape) {
-    return xla::util::Iota<xla::int64_t>(shape.rank());
+    return torch::lazy::Iota<xla::int64_t>(shape.rank());
   }
 
   static xla::XlaOp BroadcastDimensions(
@@ -169,7 +170,7 @@ class XlaHelpers {
   // Converts an iterable container to a vector XLA int64's.
   template <typename S>
   static std::vector<xla::int64_t> I64List(const S& input) {
-    return xla::util::ToVector<xla::int64_t>(input);
+    return torch::lazy::ToVector<xla::int64_t>(input);
   }
 
   static c10::optional<xla::int64_t> I64Optional(c10::optional<int64_t> opt) {

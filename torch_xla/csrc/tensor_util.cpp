@@ -20,6 +20,7 @@
 #include "tensorflow/compiler/xla/xla_client/util.h"
 #include "tensorflow/core/lib/bfloat16/bfloat16.h"
 #include "torch/csrc/lazy/core/hash.h"
+#include "torch/csrc/lazy/core/util.h"
 #include "torch_xla/csrc/helpers.h"
 #include "torch_xla/csrc/layout_manager.h"
 
@@ -342,7 +343,7 @@ std::vector<xla::int64_t> GetIterationDimensions(const xla::Shape& shape) {
   // is more than kMinorDimScale times the most minor one.
   static const xla::int64_t kMinorDimScale = 8;
   std::vector<xla::int64_t> iter_dims =
-      xla::util::ToVector<xla::int64_t>(shape.layout().minor_to_major());
+      torch::lazy::ToVector<xla::int64_t>(shape.layout().minor_to_major());
   size_t index = 0;
   xla::int64_t scaled_dim_size =
       kMinorDimScale * shape.dimensions(iter_dims[index]);
@@ -629,7 +630,7 @@ template <typename SType, typename DType>
 at::Tensor XlaLiteralToTensor(const xla::Literal& literal,
                               at::ScalarType atype) {
   std::vector<int64_t> dimensions =
-      xla::util::ToVector<int64_t>(literal.shape().dimensions());
+      torch::lazy::ToVector<int64_t>(literal.shape().dimensions());
   xla::Shape torch_shape = MakeTorchTensorLayout(
       literal.shape().dimensions(), /*dynamic_dimensions=*/{},
       literal.shape().element_type());

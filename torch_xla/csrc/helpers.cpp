@@ -10,6 +10,7 @@
 #include "tensorflow/compiler/xla/xla_client/sys_util.h"
 #include "tensorflow/compiler/xla/xla_client/tf_logging.h"
 #include "tensorflow/compiler/xla/xla_client/util.h"
+#include "torch/csrc/lazy/core/util.h"
 #include "torch_xla/csrc/convert_ops.h"
 #include "torch_xla/csrc/tensor_util.h"
 
@@ -422,7 +423,7 @@ std::vector<xla::int64_t> XlaHelpers::MakeTransposePermutation(
     xla::int64_t dim0, xla::int64_t dim1, xla::int64_t rank) {
   xla::int64_t canonical_dim0 = GetCanonicalDimensionIndex(dim0, rank);
   xla::int64_t canonical_dim1 = GetCanonicalDimensionIndex(dim1, rank);
-  auto permute_dims = xla::util::Iota<xla::int64_t>(rank);
+  auto permute_dims = torch::lazy::Iota<xla::int64_t>(rank);
   std::swap(permute_dims[canonical_dim0], permute_dims[canonical_dim1]);
   return permute_dims;
 }

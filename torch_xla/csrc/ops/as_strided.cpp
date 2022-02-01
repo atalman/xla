@@ -5,6 +5,7 @@
 #include "tensorflow/compiler/xla/shape_util.h"
 #include "tensorflow/compiler/xla/util.h"
 #include "tensorflow/compiler/xla/xla_client/util.h"
+#include "torch/csrc/lazy/core/util.h"
 #include "torch_xla/csrc/data_ops.h"
 #include "torch_xla/csrc/helpers.h"
 #include "torch_xla/csrc/lowering_context.h"
@@ -86,7 +87,7 @@ std::vector<xla::int64_t> AsStrided::GetArrayStridePermutation(
     absl::Span<const xla::int64_t> stride,
     absl::Span<const xla::int64_t> size) {
   std::vector<xla::int64_t> permutation =
-      xla::util::Iota<xla::int64_t>(stride.size());
+      torch::lazy::Iota<xla::int64_t>(stride.size());
   std::sort(
       permutation.begin(), permutation.end(),
       [&](xla::int64_t a, xla::int64_t b) { return stride[a] > stride[b]; });

@@ -8,6 +8,7 @@
 #include "tensorflow/compiler/xla/util.h"
 #include "tensorflow/compiler/xla/xla_client/debug_macros.h"
 #include "tensorflow/compiler/xla/xla_client/util.h"
+#include "torch/csrc/lazy/core/util.h"
 #include "torch_xla/csrc/helpers.h"
 #include "torch_xla/csrc/ops/as_strided.h"
 #include "torch_xla/csrc/ops/as_strided_view_update.h"
@@ -41,15 +42,15 @@ ir::Value ApplyViewInfo(ir::Value ir_value, const ViewInfo& view_info) {
     case ViewInfo::Type::kReshape:
       return ir::MakeNode<ir::ops::View>(
           ir_value,
-          xla::util::ToVector<xla::int64_t>(view_info.shape.dimensions()));
+          torch::lazy::ToVector<xla::int64_t>(view_info.shape.dimensions()));
     case ViewInfo::Type::kResize:
       return ir::MakeNode<ir::ops::Resize>(
           ir_value,
-          xla::util::ToVector<xla::int64_t>(view_info.shape.dimensions()));
+          torch::lazy::ToVector<xla::int64_t>(view_info.shape.dimensions()));
     case ViewInfo::Type::kAsStrided:
       return ir::MakeNode<ir::ops::AsStrided>(
           ir_value,
-          xla::util::ToVector<xla::int64_t>(view_info.shape.dimensions()),
+          torch::lazy::ToVector<xla::int64_t>(view_info.shape.dimensions()),
           view_info.as_strided->stride, view_info.as_strided->offset);
     case ViewInfo::Type::kDiagonal:
       return ir::MakeNode<ir::ops::Diagonal>(
@@ -57,7 +58,7 @@ ir::Value ApplyViewInfo(ir::Value ir_value, const ViewInfo& view_info) {
           view_info.diagonal->dim2);
     default:
       XLA_ERROR() << "Invalid view type: "
-                  << xla::util::GetEnumValue(view_info.view_type);
+                  << torch::lazy::GetEnumValue(view_info.view_type);
   }
 }
 
@@ -93,18 +94,18 @@ ir::Value ApplyUpdate(ir::Value ir_value,
         break;
       case ViewInfo::Type::kReshape:
         result = ir::MakeNode<ir::ops::View>(
-            result, xla::util::ToVector<xla::int64_t>(
+            result, torch::lazy::ToVector<xla::int64_t>(
                         view_info.source_shape.dimensions()));
         break;
       case ViewInfo::Type::kResize:
         result = ir::MakeNode<ir::ops::Resize>(
-            result, xla::util::ToVector<xla::int64_t>(
+            result, torch::lazy::ToVector<xla::int64_t>(
                         view_info.source_shape.dimensions()));
         break;
       case ViewInfo::Type::kAsStrided:
         result = ir::MakeNode<ir::ops::AsStridedViewUpdate>(
             tmp_values[i - 1], result,
-            xla::util::ToVector<xla::int64_t>(
+            torch::lazy::ToVector<xla::int64_t>(
                 view_info.source_shape.dimensions()),
             view_info.as_strided->stride, view_info.as_strided->offset);
         break;
@@ -115,7 +116,7 @@ ir::Value ApplyUpdate(ir::Value ir_value,
         break;
       default:
         XLA_ERROR() << "Invalid view type: "
-                    << xla::util::GetEnumValue(view_info.view_type);
+                    << torch::lazy::GetEnumValue(view_info.view_type);
     }
   }
   return result;
